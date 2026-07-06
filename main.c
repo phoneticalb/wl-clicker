@@ -12,7 +12,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define NUM(a) (sizeof(a) / sizeof(*a))
 #define MAX_KEYBOARDS 10 // surely
 
 static volatile int running = 1;
@@ -42,7 +41,7 @@ static int get_keyboard_input(int fd) {
     return n == sizeof(ev) && ev.type == EV_KEY && ev.code == KEY_F8 ? ev.value : -1;
 }
 
-static char** get_keyboard_devices() {
+static char** get_keyboard_devices(int* count) {
     FILE*        fp = fopen("/proc/bus/input/devices", "r");
     static char* device_paths[MAX_KEYBOARDS];
     static char  device_storage[MAX_KEYBOARDS][256];
@@ -77,6 +76,7 @@ static char** get_keyboard_devices() {
     }
 
     fclose(fp);
+    *count = keyboard_count;
     return keyboard_count > 0 ? device_paths : NULL;
 }
 
@@ -151,13 +151,11 @@ static bool init(struct ClientState* state, unsigned int cps) {
     state->virtual_pointer =
         zwlr_virtual_pointer_manager_v1_create_virtual_pointer(state->pointer_manager, NULL);
 
-    char** kbd_devices = get_keyboard_devices();
+    char** kbd_devices = get_keyboard_devices(&state->kbd_amt);
     if (!kbd_devices) {
         fprintf(stderr, "Error: failed to find any keyboard devices.\n");
         return false;
     }
-
-    state->kbd_amt = NUM(kbd_devices) + 1;
 
     // iterate through keyboards
     for (int i = 0; i < state->kbd_amt; i++) {
