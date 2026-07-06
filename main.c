@@ -131,6 +131,7 @@ static void send_click(struct ClientState* state, int button) {
 }
 
 static bool init(struct ClientState* state, unsigned int cps) {
+    cps = cps <= 0 ? 1 : cps;
     state->click_interval_ns = (1e9 / cps) - 10000;
 
     state->display = wl_display_connect(NULL);
