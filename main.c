@@ -12,8 +12,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_KEYBOARDS 10 // surely
-
 #define ANSI_RED "\x1b[31m"
 #define ANSI_BLUE "\x1b[34m"
 #define ANSI_BOLD "\x1b[1m"
@@ -42,8 +40,7 @@ struct ClientState {
     struct zwlr_virtual_pointer_v1*         virtual_pointer;
     int                                     click_interval_ns;
     bool                                    key_pressed;
-    int                                     kbd_fds[MAX_KEYBOARDS];
-    int                                     kbd_amt;
+    int                                     kbd_fd;
 };
 
 static int get_keyboard_input(int fd) {
@@ -58,43 +55,38 @@ static int get_keyboard_input(int fd) {
     return n == sizeof(ev) && ev.type == EV_KEY && ev.code == KEY_F8 ? ev.value : -1;
 }
 
-static char** get_keyboard_devices(int* count) {
-    FILE*        fp = fopen("/proc/bus/input/devices", "r");
-    static char* device_paths[MAX_KEYBOARDS];
-    static char  device_storage[MAX_KEYBOARDS][256];
-    char         line[256];
-    char         event_name[32];
-    int          keyboard_count = 0;
-    bool         in_keyboard_block = false;
-
-    if (!fp) {
+static char* get_keyboard_device() {
+    FILE* f = fopen("/proc/bus/input/devices", "r");
+    if (!f) {
         ERR("Failed to open /proc/bus/input/devices\n");
         return NULL;
     }
 
-    for (int i = 0; i < MAX_KEYBOARDS; i++)
-        device_paths[i] = NULL;
+    char  line[256];
+    int   current_event = -1;
+    char* result = NULL;
 
-    while (fgets(line, sizeof(line), fp) && keyboard_count < MAX_KEYBOARDS) {
-        if (strstr(line, "Handlers=")) {
-            in_keyboard_block = strstr(line, "kbd") != NULL && strstr(line, "sysrq") != NULL;
-            if (in_keyboard_block) {
-                char* event_start = strstr(line, "event");
-                if (event_start) {
-                    sscanf(event_start, "%31s", event_name);
-                    snprintf(device_storage[keyboard_count], 256, "/dev/input/%s", event_name);
-                    device_paths[keyboard_count] = device_storage[keyboard_count];
-                    INFO("Found keyboard: %s\n", device_paths[keyboard_count]);
-
-                    keyboard_count++;
-                }
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "H: Handlers=", 12) == 0) {
+            char* p = strstr(line, "event");
+            if (p) {
+                int num;
+                if (sscanf(p, "event%d", &num) == 1)
+                    current_event = num;
+            }
+        } else if (strncmp(line, "B: EV=", 6) == 0) {
+            if (strncmp(line, "B: EV=120013" /* keyboard device */, 12) == 0 &&
+                current_event >= 0) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "/dev/input/event%d", current_event);
+                result = strdup(buf);
+                break;
             }
         }
     }
 
-    fclose(fp);
-    *count = keyboard_count;
-    return keyboard_count > 0 ? device_paths : NULL;
+    fclose(f);
+    return result;
 }
 
 static void registry_global(void* data, struct wl_registry* registry, uint32_t name,
@@ -169,26 +161,24 @@ static bool init(struct ClientState* state, unsigned int cps) {
     state->virtual_pointer =
         zwlr_virtual_pointer_manager_v1_create_virtual_pointer(state->pointer_manager, NULL);
 
-    char** kbd_devices = get_keyboard_devices(&state->kbd_amt);
-    if (!kbd_devices) {
-        ERR("Failed to find any keyboard devices.\n");
+    char* kbd_device = get_keyboard_device();
+    if (!kbd_device) {
+        ERR("Failed to find a keyboard device.\n");
         return false;
     }
 
-    // iterate through keyboards
-    for (int i = 0; i < state->kbd_amt; i++) {
-        char* device = kbd_devices[i];
-        int   kbd_fd = open(device, O_RDONLY);
-        if (kbd_fd == -1) {
-            ERR("Failed to open keyboard device %s\n", device);
-            return false;
-        }
+    INFO("Found keyboard device: %s\n", kbd_device);
 
-        int flags = fcntl(kbd_fd, F_GETFL, 0);
-        fcntl(kbd_fd, F_SETFL, flags | O_NONBLOCK);
-
-        state->kbd_fds[i] = kbd_fd;
+    int kbd_fd = open(kbd_device, O_RDONLY);
+    if (kbd_fd == -1) {
+        ERR("Failed to open keyboard device %s\n", kbd_device);
+        return false;
     }
+
+    int flags = fcntl(kbd_fd, F_GETFL, 0);
+    fcntl(kbd_fd, F_SETFL, flags | O_NONBLOCK);
+
+    state->kbd_fd = kbd_fd;
 
     return true;
 }
@@ -197,14 +187,7 @@ static void finish(struct ClientState* state) {
     fprintf(stderr, "\r");
     INFO("Exiting...\n");
 
-    for (int i = 0; i < state->kbd_amt; i++) {
-        int fd = state->kbd_fds[i];
-        if (fd >= 0) {
-            close(fd);
-            fd = -1;
-        }
-    }
-
+    close(state->kbd_fd);
     zwlr_virtual_pointer_v1_destroy(state->virtual_pointer);
     zwlr_virtual_pointer_manager_v1_destroy(state->pointer_manager);
     wl_registry_destroy(state->registry);
@@ -233,7 +216,7 @@ int main(int argc, char* argv[]) {
     bool         toggle_click = false;
     bool         version = false;
     int          c;
-    
+
     while (1) {
         int option_index = 0;
         c = getopt_long(argc, argv, "thb:v", long_options, &option_index);
@@ -290,17 +273,15 @@ int main(int argc, char* argv[]) {
     INFO("Ready, running at %d cps\n", clicks_per_second);
 
     while (running) {
-        for (int i = 0; i < state.kbd_amt; i++) {
-            int key_state = get_keyboard_input(state.kbd_fds[i]);
+        int key_state = get_keyboard_input(state.kbd_fd);
 
-            if (key_state == -2) {
-                return 1;
-            } else if (key_state != -1) {
-                if (toggle_click && key_state == 1)
-                    state.key_pressed = !state.key_pressed;
-                else if (!toggle_click)
-                    state.key_pressed = key_state;
-            }
+        if (key_state == -2) {
+            return 1;
+        } else if (key_state != -1) {
+            if (toggle_click && key_state == 1)
+                state.key_pressed = !state.key_pressed;
+            else if (!toggle_click)
+                state.key_pressed = key_state;
         }
 
         clock_gettime(CLOCK_MONOTONIC, &current_time);
