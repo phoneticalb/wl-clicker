@@ -14,6 +14,23 @@
 
 #define MAX_KEYBOARDS 10 // surely
 
+#define ANSI_RED "\x1b[31m"
+#define ANSI_BLUE "\x1b[34m"
+#define ANSI_BOLD "\x1b[1m"
+#define ANSI_RESET "\x1b[0m"
+
+#define INFO(...)                                                                                  \
+    do {                                                                                           \
+        fprintf(stderr, "[" ANSI_BLUE "i" ANSI_RESET "] ");                                        \
+        fprintf(stderr, __VA_ARGS__);                                                              \
+    } while (0)
+
+#define ERR(...)                                                                                   \
+    do {                                                                                           \
+        fprintf(stderr, "[" ANSI_RED "e" ANSI_RESET "] ");                                         \
+        fprintf(stderr, __VA_ARGS__);                                                              \
+    } while (0)
+
 static volatile int running = 1;
 
 void int_handler(int sig) { running = 0; }
@@ -34,8 +51,8 @@ static int get_keyboard_input(int fd) {
     ssize_t            n = read(fd, &ev, sizeof(ev));
 
     if (n == -1 && errno != EAGAIN) {
-        perror("read");
-        return -1;
+        ERR("Error receiving keyboard input: %s\n", strerror(errno));
+        return -2;
     }
 
     return n == sizeof(ev) && ev.type == EV_KEY && ev.code == KEY_F8 ? ev.value : -1;
@@ -51,7 +68,7 @@ static char** get_keyboard_devices(int* count) {
     bool         in_keyboard_block = false;
 
     if (!fp) {
-        perror("Error opening /proc/bus/input/devices");
+        ERR("Failed to open /proc/bus/input/devices\n");
         return NULL;
     }
 
@@ -67,7 +84,7 @@ static char** get_keyboard_devices(int* count) {
                     sscanf(event_start, "%31s", event_name);
                     snprintf(device_storage[keyboard_count], 256, "/dev/input/%s", event_name);
                     device_paths[keyboard_count] = device_storage[keyboard_count];
-                    printf("Found keyboard: %s\n", device_paths[keyboard_count]);
+                    INFO("Found keyboard: %s\n", device_paths[keyboard_count]);
 
                     keyboard_count++;
                 }
@@ -136,7 +153,7 @@ static bool init(struct ClientState* state, unsigned int cps) {
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
-        fprintf(stderr, "Error: failed to connect to Wayland display.\n");
+        ERR("Failed to connect to Wayland display.\n");
         return false;
     }
 
@@ -145,7 +162,7 @@ static bool init(struct ClientState* state, unsigned int cps) {
     wl_display_roundtrip(state->display);
 
     if (!state->pointer_manager) {
-        fprintf(stderr, "Error: your compositor does not support wlr-virtual-pointer.\n");
+        ERR("Your compositor does not support wlr-virtual-pointer.\n");
         return false;
     }
 
@@ -154,7 +171,7 @@ static bool init(struct ClientState* state, unsigned int cps) {
 
     char** kbd_devices = get_keyboard_devices(&state->kbd_amt);
     if (!kbd_devices) {
-        fprintf(stderr, "Error: failed to find any keyboard devices.\n");
+        ERR("Failed to find any keyboard devices.\n");
         return false;
     }
 
@@ -163,7 +180,7 @@ static bool init(struct ClientState* state, unsigned int cps) {
         char* device = kbd_devices[i];
         int   kbd_fd = open(device, O_RDONLY);
         if (kbd_fd == -1) {
-            fprintf(stderr, "Error: failed to open keyboard device %s\n", device);
+            ERR("Failed to open keyboard device %s\n", device);
             return false;
         }
 
@@ -177,7 +194,8 @@ static bool init(struct ClientState* state, unsigned int cps) {
 }
 
 static void finish(struct ClientState* state) {
-    printf(" Exiting...\n");
+    fprintf(stderr, "\r");
+    INFO("Exiting...\n");
 
     for (int i = 0; i < state->kbd_amt; i++) {
         int fd = state->kbd_fds[i];
@@ -196,6 +214,7 @@ static void finish(struct ClientState* state) {
 static const struct option long_options[] = {{"toggle", no_argument, NULL, 't'},
                                              {"help", no_argument, NULL, 'h'},
                                              {"button", required_argument, NULL, 'b'},
+                                             {"version", no_argument, NULL, 'v'},
                                              {0, 0, 0}};
 
 static const char usage[] =
@@ -205,22 +224,24 @@ static const char usage[] =
     "middle)\n"
     "  -t, --toggle            Toggle the autoclicker on keypress\n"
     "  -h, --help              Show this menu\n"
+    "  -v, --version           Print version number\n"
     "\n";
 
 int main(int argc, char* argv[]) {
     unsigned int clicks_per_second = 20;
     int          button_type = 0;
     bool         toggle_click = false;
+    bool         version = false;
     int          c;
-
+    
     while (1) {
         int option_index = 0;
-        c = getopt_long(argc, argv, "thb:", long_options, &option_index);
+        c = getopt_long(argc, argv, "thb:v", long_options, &option_index);
         if (c == -1)
             break;
         switch (c) {
         case 'h': // help
-            printf("%s", usage);
+            INFO("%s", usage);
             exit(EXIT_SUCCESS);
             break;
         case 't': // toggle
@@ -229,18 +250,26 @@ int main(int argc, char* argv[]) {
         case 'b': // button
             button_type = atoi(optarg);
             break;
+        case 'v': // version
+            version = true;
+            break;
         default:
-            fprintf(stderr, "%s", usage);
+            INFO("%s", usage);
             exit(EXIT_FAILURE);
             break;
         }
     }
 
+    INFO(ANSI_BOLD "wl-clicker " ANSI_RESET "%s\n", VERSION);
+
+    if (version)
+        return 0;
+
     if (optind < argc)
         clicks_per_second = abs(atoi(argv[optind]));
 
     if (prctl(PR_SET_TIMERSLACK, 1) == -1) {
-        perror("prctl");
+        ERR("Error with prctl: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -258,13 +287,15 @@ int main(int argc, char* argv[]) {
 
     signal(SIGINT, int_handler);
 
-    printf("Ready\n");
+    INFO("Ready, running at %d cps\n", clicks_per_second);
 
     while (running) {
         for (int i = 0; i < state.kbd_amt; i++) {
             int key_state = get_keyboard_input(state.kbd_fds[i]);
 
-            if (key_state != -1) {
+            if (key_state == -2) {
+                return 1;
+            } else if (key_state != -1) {
                 if (toggle_click && key_state == 1)
                     state.key_pressed = !state.key_pressed;
                 else if (!toggle_click)

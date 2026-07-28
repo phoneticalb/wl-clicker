@@ -1,5 +1,6 @@
+GIT_VERSION := "$(shell git describe --abbrev=0 --tags)"
 CC = gcc
-CFLAGS = -lwayland-client -D_POSIX_C_SOURCE=200809L -mshstk
+CFLAGS = -lwayland-client -D_POSIX_C_SOURCE=200809L -mshstk -DVERSION=\"$(GIT_VERSION)\"
 LDFLAGS = -Wl,-z,relro,-z,now -Wl,-z,shstk
 BINARY = ./build/wl-clicker
 SOURCES = ./main.c ./build/wlr-virtual-pointer.c
