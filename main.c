@@ -75,8 +75,13 @@ static char* get_keyboard_device() {
                     current_event = num;
             }
         } else if (strncmp(line, "B: EV=", 6) == 0) {
-            if (strncmp(line, "B: EV=120013" /* keyboard device */, 12) == 0 &&
-                current_event >= 0) {
+            char* mask_str;
+            mask_str = strtok(line, "=");
+            mask_str = strtok(NULL, "=");
+
+            int ev_mask = (int)strtol(mask_str, NULL, 16);
+
+            if ((ev_mask & 0x120013) == 0x120013 && current_event >= 0) {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "/dev/input/event%d", current_event);
                 result = strdup(buf);
