@@ -58,33 +58,25 @@ static int get_keyboard_input(int fd) {
 static char* get_keyboard_device() {
     FILE* f = fopen("/proc/bus/input/devices", "r");
     if (!f) {
-        ERR("Failed to open /proc/bus/input/devices\n");
+        ERR("Failed to open /proc/bus/input/devices: %s\n", strerror(errno));
         return NULL;
     }
 
-    char  line[256];
-    int   current_event = -1;
-    char* result = NULL;
+    static char result[32];
+    char        line[256];
+    char*       current_event = NULL;
 
     while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\n")] = 0;
         if (strncmp(line, "H: Handlers=", 12) == 0) {
-            char* p = strstr(line, "event");
-            if (p) {
-                int num;
-                if (sscanf(p, "event%d", &num) == 1)
-                    current_event = num;
-            }
+            current_event = strstr(line, "event");
+            current_event[strlen(current_event) - 1] = '\0';
         } else if (strncmp(line, "B: EV=", 6) == 0) {
-            char* mask_str;
-            mask_str = strtok(line, "=");
-            mask_str = strtok(NULL, "=");
+            int ev_mask;
+            sscanf(line, "B: EV=%x", &ev_mask);
 
-            int ev_mask = (int)strtol(mask_str, NULL, 16);
-
-            if ((ev_mask & 0x120013) == 0x120013 && current_event >= 0) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "/dev/input/event%d", current_event);
-                result = strdup(buf);
+            if ((ev_mask & 0x120013) == 0x120013 && current_event != NULL) {
+                snprintf(result, sizeof(result), "/dev/input/%s", current_event);
                 break;
             }
         }
@@ -176,7 +168,7 @@ static bool init(struct ClientState* state, unsigned int cps) {
 
     int kbd_fd = open(kbd_device, O_RDONLY);
     if (kbd_fd == -1) {
-        ERR("Failed to open keyboard device %s\n", kbd_device);
+        ERR("Failed to open keyboard device %s: %s\n", kbd_device, strerror(errno));
         return false;
     }
 
