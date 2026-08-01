@@ -64,26 +64,30 @@ static char* get_keyboard_device() {
 
     static char result[32];
     char        line[256];
-    char*       current_event = NULL;
+    char        current_event[32] = "";
 
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\n")] = 0;
         if (strncmp(line, "H: Handlers=", 12) == 0) {
-            current_event = strstr(line, "event");
-            current_event[strlen(current_event) - 1] = '\0';
+            char* event_name = strstr(line, "event");
+            if (event_name) {
+                event_name[strlen(event_name) - 1] = '\0';
+                snprintf(current_event, sizeof(current_event), "%s", event_name);
+            }
         } else if (strncmp(line, "B: EV=", 6) == 0) {
-            int ev_mask;
-            sscanf(line, "B: EV=%x", &ev_mask);
+            int ev;
+            sscanf(line, "B: EV=%x", &ev);
 
-            if ((ev_mask & 0x120013) == 0x120013 && current_event != NULL) {
+            if ((ev & 0x120013) == 0x120013 && current_event[0] != '\0') {
                 snprintf(result, sizeof(result), "/dev/input/%s", current_event);
-                break;
+                fclose(f);
+                return result;
             }
         }
     }
 
     fclose(f);
-    return result;
+    return NULL;
 }
 
 static void registry_global(void* data, struct wl_registry* registry, uint32_t name,
