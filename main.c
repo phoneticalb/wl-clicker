@@ -47,7 +47,7 @@ static int get_keyboard_input(int fd) {
     struct input_event ev;
     ssize_t            n = read(fd, &ev, sizeof(ev));
 
-    if (n == -1 && errno != EAGAIN) {
+    if (n == -1 && errno != EAGAIN && errno != EINTR) {
         ERR("Error receiving keyboard input: %s\n", strerror(errno));
         return -2;
     }
@@ -142,7 +142,7 @@ static void send_click(struct ClientState* state, int button) {
 
 static bool init(struct ClientState* state, unsigned int cps) {
     cps = cps <= 0 ? 1 : cps;
-    state->click_interval_ns = (1e9 / cps) - 10000;
+    state->click_interval_ns = (1e9 / cps);
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
@@ -185,7 +185,7 @@ static bool init(struct ClientState* state, unsigned int cps) {
 }
 
 static void finish(struct ClientState* state) {
-    fprintf(stderr, "\r");
+    write(STDERR_FILENO, "\r", 1);
     INFO("Exiting...\n");
 
     close(state->kbd_fd);
@@ -277,7 +277,7 @@ int main(int argc, char* argv[]) {
         int key_state = get_keyboard_input(state.kbd_fd);
 
         if (key_state == -2) {
-            return 1;
+            break;
         } else if (key_state != -1) {
             if (toggle_click && key_state == 1)
                 state.key_pressed = !state.key_pressed;
